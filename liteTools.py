@@ -328,9 +328,7 @@ class NT:
             requests.get(url='https://www.baidu.com/',
                          proxies=proxies, timeout=10)
         except requests.RequestException as e:
-            LL.log(4, f'代理[{proxies}]存在问题\n错误: [{e}]')
             return 1
-        LL.log(1, f'代理[{proxies}]可用')
         return 0
 
 
@@ -767,8 +765,11 @@ class SuperString:
         return self.fStr
 
 
-class ProxyGet():
-    def __init__(self, config):
+class ProxyGet:
+    def __init__(self, config: dict):
+        """
+        params config: dict|str|none
+        """
         self.config = config
         self.proxy = {}
         self.type = ""
@@ -813,10 +814,10 @@ class ProxyGet():
             raise TypeError(f"不支持[{type(config)}]类型的用户代理输入")
 
         # 检查直接使用的代理可用性
-        if self.type == "normal" and NT.isDisableProxies(config):
-            config = {}
+        if self.type == "normal" and NT.isDisableProxies(self.proxy):
+            self.proxy = {}
             self.type = "normal"
-            LL.log(2, '用户代理已取消使用')
+            LL.log(2, f'[{self.proxy}]不可用, 已取消使用')
 
     def getProxy(self):
         if self.type == "normal" or self.type == "none":
@@ -833,12 +834,13 @@ class ProxyGet():
                         'http': proxyUrl,
                         'https': proxyUrl
                     }
+                    LL.log(1, f"通过熊猫代理API获取到代理[{proxy}]")
                     if NT.isDisableProxies(proxy):
                         raise Exception(f"通过熊猫代理API获取到的代理不可用[{proxy}]")
-                    LL.log(1, f"通过熊猫代理API获取到代理[{proxy}]")
+                    LL.log(1, f"代理[{proxy}]可用")
                     return proxy
                 except Exception as e:
-                    msg = f"在尝试通过熊猫代理API获取代理时候发生错误\n错误: [{e}]\nres: [{res}]\n"
+                    msg = f"在尝试通过熊猫代理API获取代理时候发生错误\n可能的解决方案: \n1. 如果是云函数, 请确定开启固定出口IP功能, 否则无法使用熊猫代理。\n2. 刚开始使用时, 前几天的失败率较高\n错误: [{e}]\nres: [{res}]"
                     LL.log(2, msg)
                     if times == self.maxRetry:
                         LL.log(2, "取消使用代理")
@@ -846,3 +848,112 @@ class ProxyGet():
                     else:
                         time.sleep(2)  # 熊猫代理最快一秒提取一次IP
                         pass
+
+
+class SignTaskStatus:
+    '''用于标记用户完成情况
+    :code的含义
+    0: 等待执行
+    1: 出现错误(等待重试)
+    100: 任务已被完成
+    101: 该任务正常执行完成
+    200: 用户设置不执行该任务
+    201: 该任务不在执行时间
+    300: 出错
+    301: 当前情况无法完成该任务
+    400: 没有找到需要执行的任务
+    '''
+    codeList = ('todo', 'done', 'skip', 'error', 'notFound')
+
+    def __init__(self, code, msg=''):
+        self.code = code
+        self.msg = msg
+
+    def codeHead(self):
+        return int(self.code/100)
+
+    def liteMsgEn(self):
+        return SignTaskStatus.codeList[self.codeHead()]
+
+
+class UserMsg:
+    class Msg:
+        def __init__(self):
+            self.msgList = []
+
+        def append(self, m: str):
+            self.msgList.append(str(m))
+
+        @property
+        def text(self):
+            return "\n".join(self.msgList)
+
+    def __init__(self, users: list):
+        """
+        :params user: list[dict]: 用户列表
+        """
+        self.users = users
+
+    @property
+    def title_g1(self):
+        """
+        全局标题1
+        示例: 『全局签到情况(114/514)[V-T1.0.0]』
+        """
+        codeCount = self.codeCount
+        # generalSituations —— "done/(total-skip)"
+        generalSituations = f'{codeCount[1]}/{sum(codeCount)-codeCount[2]}'
+        return f"『全局签到情况({generalSituations})[{LL.prefix}]』"
+
+    @property
+    def time_g1(self):
+        """
+        时间统计1
+        示例: Running at 2022-01-01 00:00:00, using 1145.14s
+        """
+        return f'Running at {TT.formatStartTime()}, using {TT.executionSeconds()}s'
+
+    @property
+    def count_g1(self):
+        """
+        签到情况统计1
+        示例: 10: 1todo, 8done, 1skip, 0error, 0notFound
+        """
+        codeCount = self.codeCount
+        cl = SignTaskStatus.codeList
+        return f'{sum(codeCount)}: ' + ", ".join([f"{codeCount[i]}{cl[i]}" for i in range(len(cl))])
+
+    @property
+    def msg_g1(self):
+        """
+        全局签到情况1
+        示例: 
+        『全局签到情况(1/2)[V-T1.0.0]』
+        [小李]
+        --1145141919|1
+        --初始化类失败，请键入完整的参数（用户名，密码，学校名称）
+        [小王]
+        --1145141919|1
+        --[SUCCESS]须弥教令院每日打卡
+        Running at 2022-01-01 00:00:00, using 1145.14s
+        2: 0todo, 1done, 0skip, 1error, 0notFound
+        """
+        msg = UserMsg.Msg()
+        msg.append(self.title_g1)
+        for user in self.users:
+            # 忽略跳过的任务
+            if user['taskStatus'].codeHead() != 2:
+                msg.append(f"[{user['remarkName']}]")
+                msg.append(user['taskStatus'].msg)
+        msg.append(self.time_g1)
+        msg.append(self.count_g1)
+        return msg.text
+
+    @property
+    def codeCount(self):
+        """状态码统计"""
+        codeList = [i['taskStatus'].codeHead() for i in self.users]
+        codeCount = [0]*len(SignTaskStatus.codeList)
+        for i in codeList:
+            codeCount[i] += 1
+        return codeCount
